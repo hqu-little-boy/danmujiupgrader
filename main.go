@@ -14,9 +14,12 @@ import (
 )
 
 type UpdateResponse struct {
-	Version   string `json:"version"`
-	Link      string `json:"link"`
-	ChangeLog string `json:"changeLog"`
+	Version string   `json:"version"`
+	Date    string   `json:"date"`
+	Changes []string `json:"changes"`
+	URL     []string `json:"url"`
+	Setup   string   `json:"setup"`
+	Convert string   `json:"convert"`
 }
 
 var Version string
@@ -24,13 +27,29 @@ var Version string
 func main() {
 	log.Printf("更新程序版本：%v", Version)
 	log.Println("正在查询版本信息")
-	resp, err := http.Get("https://danmuji.neuedu.work/getUpdate")
+
+	// Try primary URL first, then fallback to secondary URL
+	primaryURL := "https://gitee.com/hqu_little_boy/danmu-version/raw/master/BilibiliDanmuRobot2BiliBiliLiveRobot.json"
+	secondaryURL := "https://bilibililiverobot.21645851.xyz/BilibiliDanmuRobot2BiliBiliLiveRobot.json"
+
+	var resp *http.Response
+	var err error
+
+	resp, err = http.Get(primaryURL)
 	if err != nil {
-		log.Println("连接版本服务器错误")
+		log.Println("连接主版本服务器错误，尝试备用服务器")
 		log.Println("Error:", err)
-		return
+
+		// Try secondary URL
+		resp, err = http.Get(secondaryURL)
+		if err != nil {
+			log.Println("连接备用版本服务器也失败")
+			log.Println("Error:", err)
+			return
+		}
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode == http.StatusOK {
 		updateResp := &UpdateResponse{}
 		err := json.NewDecoder(resp.Body).Decode(updateResp)
@@ -39,13 +58,32 @@ func main() {
 			log.Println("Error decoding JSON response:", err)
 			return
 		}
-		log.Println("正在更新弹幕机")
-		err = downloadAndExtract(updateResp.Link)
+
+		log.Printf("获取到版本信息：版本 %s, 发布日期 %s", updateResp.Version, updateResp.Date)
+		log.Printf("更新内容: %v", updateResp.Changes)
+
+		// Try to construct download link using the first available URL
+		var downloadLink string
+		for _, baseURL := range updateResp.URL {
+			downloadLink = baseURL + updateResp.Convert
+			log.Printf("尝试下载链接: %s", downloadLink)
+
+			err = downloadAndExtract(downloadLink)
+			if err != nil {
+				log.Printf("从 %s 下载失败，尝试下一个URL", baseURL)
+				continue
+			}
+
+			log.Println("下载和解压成功")
+			break
+		}
+
 		if err != nil {
-			log.Println("更新弹幕机失败")
+			log.Println("所有下载源都失败了")
 			log.Println("Error:", err)
 			return
 		}
+
 		log.Println("弹幕机更新完成即将启动")
 		cmd := exec.Command("cmd.exe", "/C", "start", "GUI-BilibiliDanmuRobot.exe")
 		if err := cmd.Start(); err != nil {
