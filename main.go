@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,60 +57,131 @@ func testDownloadSpeed(url string) DownloadSpeedResult {
 	result := DownloadSpeedResult{URL: url}
 
 	testURL := url + "test.bin"
+	log.Printf("Testing download speed for URL: %s", testURL)
 
-	// Create a channel to receive the result
-	resultChan := make(chan DownloadSpeedResult, 1)
+	// Create a context with 10 second timeout for the entire operation
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	// Start download in a goroutine
+	// Create a client with a reasonable timeout for connection
+	client := &http.Client{
+		Timeout: 30 * time.Second, // Higher timeout for the client, we control timing via context
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Allow up to 10 redirects
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			// Update the User-Agent for redirects
+			req.Header.Add("User-Agent", "Mozilla/5.0 (compatible; Go-http-client/1.1)")
+			return nil
+		},
+	}
+
+	// Create request with proper headers
+	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+	if err != nil {
+		log.Printf("Failed to create request for %s: %v", testURL, err)
+		result.Error = err
+		return result
+	}
+
+	// Add headers to make request look more like a regular browser request
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Go-http-client/1.1)")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to make request to %s: %v", testURL, err)
+		result.Error = err
+		return result
+	}
+	defer resp.Body.Close()
+
+	log.Printf("Successfully connected to %s, status: %d", testURL, resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		err := fmt.Errorf("HTTP request failed with status: %d", resp.StatusCode)
+		log.Printf("Error: %v", err)
+		result.Error = err
+		return result
+	}
+
+	// Start measuring time
+	startTime := time.Now()
+	bytesDownloaded := int64(0)
+
+	// Channel to signal completion
+	done := make(chan error, 1)
+
+	// Start a goroutine to read the response body
 	go func() {
-		startTime := time.Now()
-
-		client := &http.Client{
-			Timeout: 10 * time.Second, // Maximum 10 seconds as specified
+		buffer := make([]byte, 32*1024) // 32KB buffer
+		for {
+			select {
+			case <-ctx.Done():
+				// Context was cancelled (timeout reached)
+				done <- nil
+				return
+			default:
+				// Try to read more data
+				n, err := resp.Body.Read(buffer)
+				if n > 0 {
+					bytesDownloaded += int64(n)
+					// Optional: log progress periodically
+					if bytesDownloaded%(1024*1024) == 0 { // Log every 1MB
+						log.Printf("Downloaded %d bytes from %s", bytesDownloaded, testURL)
+					}
+				}
+				if err != nil {
+					if err == io.EOF {
+						// Finished reading the entire file
+						done <- err
+						return
+					} else {
+						// Some other error occurred
+						log.Printf("Error reading from %s: %v", testURL, err)
+						done <- err
+						return
+					}
+				}
+			}
 		}
-
-		resp, err := client.Get(testURL)
-		if err != nil {
-			result.Error = err
-			resultChan <- result
-			return
-		}
-		defer resp.Body.Close()
-
-		// Calculate download time
-		downloadTime := time.Since(startTime)
-
-		// Read response body to measure actual download
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			result.Error = err
-			resultChan <- result
-			return
-		}
-
-		// Calculate speed in bytes per second
-		size := len(data)
-		seconds := downloadTime.Seconds()
-		if seconds == 0 {
-			seconds = 0.001 // Avoid division by zero
-		}
-		speed := float64(size) / seconds
-
-		result.Speed = speed
-		resultChan <- result
 	}()
 
-	// Wait for result or timeout after 10 seconds
+	// Wait for either timeout or completion
 	select {
-	case res := <-resultChan:
-		return res
-	case <-time.After(10 * time.Second):
-		return DownloadSpeedResult{
-			URL:   url,
-			Speed: 0,
-			Error: fmt.Errorf("download timed out after 10 seconds"),
+	case <-ctx.Done():
+		// Context was cancelled (timeout reached)
+		elapsed := time.Since(startTime)
+		seconds := elapsed.Seconds()
+		if seconds <= 0 {
+			seconds = 0.001 // Avoid division by zero
 		}
+		speed := float64(bytesDownloaded) / seconds
+		log.Printf("Timeout reached for %s, downloaded %d bytes in %.2f seconds, speed: %.2f bytes/sec",
+			testURL, bytesDownloaded, seconds, speed)
+		result.Speed = speed
+	case err := <-done:
+		if err == io.EOF {
+			// Finished reading the entire file
+			elapsed := time.Since(startTime)
+			seconds := elapsed.Seconds()
+			if seconds <= 0 {
+				seconds = 0.001 // Avoid division by zero
+			}
+			speed := float64(bytesDownloaded) / seconds
+			log.Printf("Completed download from %s, total %d bytes in %.2f seconds, speed: %.2f bytes/sec",
+				testURL, bytesDownloaded, seconds, speed)
+			result.Speed = speed
+		} else if err != nil {
+			log.Printf("Error during download from %s: %v", testURL, err)
+			result.Error = err
+		}
+		// If err is nil, it means context was cancelled (timeout case already handled above)
 	}
+
+	log.Printf("Received result for %s: speed=%.2f, error=%v", url, result.Speed, result.Error)
+	return result
 }
 
 func main() {
@@ -163,12 +235,12 @@ func main() {
 			}(baseURL)
 		}
 
-		// Collect results
+		// Collect results - give more time to account for the individual timeouts
 		speedResults := make([]DownloadSpeedResult, 0, len(updateResp.URL))
-		timeout := time.After(10 * time.Second) // Overall timeout of 10 seconds
+		timeout := time.After(15 * time.Second) // Overall timeout of 15 seconds to account for individual 10s timeouts
 		completedSources := 0
 
-		// Wait for all goroutines to complete or timeout
+		// Wait for all goroutines to complete or overall timeout
 		for completedSources < len(updateResp.URL) {
 			select {
 			case result := <-resultsChan:
@@ -180,8 +252,9 @@ func main() {
 					log.Printf("源 %s 测试结果: %.2f bytes/sec", result.URL, result.Speed)
 				}
 			case <-timeout:
-				log.Println("达到10秒超时，停止测试")
-				// Even if timeout, collect any results we got so far
+				log.Println("达到总体超时，停止测试")
+				// Collect any remaining results that might still come in
+				remainingTimeout := time.After(2 * time.Second) // Give 2 more seconds for stragglers
 				for {
 					select {
 					case result := <-resultsChan:
@@ -192,7 +265,8 @@ func main() {
 						} else {
 							log.Printf("源 %s 测试结果: %.2f bytes/sec", result.URL, result.Speed)
 						}
-					default:
+					case <-remainingTimeout:
+						log.Printf("最终结果收集完成，已收集 %d 个结果", len(speedResults))
 						goto finishTesting
 					}
 				}
