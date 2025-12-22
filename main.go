@@ -35,7 +35,12 @@ func downloadFile(url, filename string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Printf("关闭响应体时出错: %v", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed with status code: %d", resp.StatusCode)
@@ -45,7 +50,12 @@ func downloadFile(url, filename string) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func(out *os.File) {
+		err := out.Close()
+		if err != nil {
+			log.Printf("关闭文件 %s 时出错: %v", filename, err)
+		}
+	}(out)
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
@@ -99,7 +109,12 @@ func testDownloadSpeed(url string) DownloadSpeedResult {
 		result.Error = err
 		return result
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Printf("关闭响应体时出错: %v", err)
+		}
+	}(resp.Body)
 
 	log.Printf("Successfully connected to %s, status: %d", testURL, resp.StatusCode)
 
@@ -208,7 +223,12 @@ func main() {
 			return
 		}
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Printf("关闭响应体时出错: %v", err)
+		}
+	}(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
 		updateResp := &UpdateResponse{}
