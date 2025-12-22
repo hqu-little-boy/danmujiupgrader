@@ -1,4 +1,4 @@
-package main
+package utils
 
 type UpdateResponse struct {
 	Version string   `json:"version"`

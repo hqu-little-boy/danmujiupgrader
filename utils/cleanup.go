@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"log"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 )
 
-func cleanupDownloadedFiles(updateResp *UpdateResponse) {
+func CleanupDownloadedFiles(updateResp *UpdateResponse) {
 	// 清理下载的安装和转换文件
 	if updateResp != nil {
 		setupFileName := filepath.Base(updateResp.Setup)

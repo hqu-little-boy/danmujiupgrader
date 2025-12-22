@@ -1,4 +1,4 @@
-package main
+package utils
 
 import (
 	"encoding/json"
@@ -10,19 +10,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 )
 
-func performUpdate(updateResp *UpdateResponse) error {
+func PerformUpdate(updateResp *UpdateResponse) error {
 	log.Printf("获取到版本信息：版本 %s, 发布日期 %s", updateResp.Version, updateResp.Date)
 	log.Printf("更新内容: %v", updateResp.Changes)
 
-	fastestSource, err := findFastestSource(updateResp.URL)
-	if err != nil {
-		return err
+	// Use the first source as default
+	if len(updateResp.URL) == 0 {
+		return fmt.Errorf("no download sources available")
 	}
+	firstSource := updateResp.URL[0]
 
-	err = downloadAndExecuteFiles(updateResp, fastestSource)
+	err := downloadAndExecuteFiles(updateResp, firstSource)
 	if err != nil {
 		return err
 	}
@@ -33,93 +33,13 @@ func performUpdate(updateResp *UpdateResponse) error {
 	return nil
 }
 
-func findFastestSource(urls []string) (string, error) {
-	log.Println("开始并发测试各源下载速度...")
+func downloadAndExecuteFiles(updateResp *UpdateResponse, firstSource string) error {
+	// Download both setup and convert files from the first source in parallel
+	setupLink := fmt.Sprintf("%s%s", firstSource, updateResp.Setup)
+	convertLink := fmt.Sprintf("%s%s", firstSource, updateResp.Convert)
 
-	// 并发测试每个URL的test.bin下载速度
-	resultsChan := make(chan DownloadSpeedResult, len(urls))
-
-	// 为每个URL启动一个goroutine来测试下载速度
-	for _, baseURL := range urls {
-		go func(url string) {
-			result := testDownloadSpeed(url)
-			resultsChan <- result
-		}(baseURL)
-	}
-
-	// 收集结果 - 给更多时间来处理各个超时
-	speedResults := make([]DownloadSpeedResult, 0, len(urls))
-	timeout := time.After(15 * time.Second) // 总体超时15秒，以处理各个10秒超时
-	completedSources := 0
-
-	// 等待所有goroutine完成或总体超时
-	for completedSources < len(urls) {
-		select {
-		case result := <-resultsChan:
-			speedResults = append(speedResults, result)
-			completedSources++
-			if result.Error != nil {
-				log.Printf("源 %s 测试结果: 失败 - %v", result.URL, result.Error)
-			}
-		case <-timeout:
-			log.Println("达到总体超时，停止测试")
-			// 收集可能仍会传入的剩余结果
-			remainingTimeout := time.After(2 * time.Second) // 再给2秒时间处理剩余结果
-			for {
-				select {
-				case result := <-resultsChan:
-					speedResults = append(speedResults, result)
-					completedSources++
-					if result.Error != nil {
-						log.Printf("源 %s 测试结果: 失败 - %v", result.URL, result.Error)
-					}
-				case <-remainingTimeout:
-					log.Printf("最终结果收集完成，已收集 %d 个结果", len(speedResults))
-					goto finishTesting
-				}
-			}
-		}
-	}
-
-finishTesting:
-	// 打印所有下载速度用于调试
-	log.Println("--- 所有源下载速度汇总 ---")
-	for _, result := range speedResults {
-		if result.Error != nil {
-			log.Printf("源 %s: 失败 - %v", result.URL, result.Error)
-		} else {
-			log.Printf("源 %s: %.2f bytes/sec", result.URL, result.Speed)
-		}
-	}
-	log.Println("------------------------")
-
-	// 在成功下载中找到最快的源
-	fastestSource := ""
-	maxSpeed := float64(0)
-	for _, result := range speedResults {
-		if result.Error == nil && result.Speed > maxSpeed {
-			maxSpeed = result.Speed
-			fastestSource = result.URL
-		}
-	}
-
-	if fastestSource == "" {
-		log.Println("所有源都无法正常下载test.bin，使用第一个源进行尝试")
-		fastestSource = urls[0]
-	} else {
-		log.Printf("最快源为: %s, 速度: %.2f bytes/sec", fastestSource, maxSpeed)
-	}
-
-	return fastestSource, nil
-}
-
-func downloadAndExecuteFiles(updateResp *UpdateResponse, fastestSource string) error {
-	// Download both setup and convert files from the fastest source in parallel
-	setupLink := fmt.Sprintf("%s%s", fastestSource, updateResp.Setup)
-	convertLink := fmt.Sprintf("%s%s", fastestSource, updateResp.Convert)
-
-	log.Printf("从最快源并行下载安装文件: %s", setupLink)
-	log.Printf("从最快源并行下载转换文件: %s", convertLink)
+	log.Printf("从首个源并行下载安装文件: %s", setupLink)
+	log.Printf("从首个源并行下载转换文件: %s", convertLink)
 
 	// Create channels to receive results
 	setupResultChan := make(chan error, 1)
@@ -143,13 +63,13 @@ func downloadAndExecuteFiles(updateResp *UpdateResponse, fastestSource string) e
 
 	// Handle setup file download error
 	if setupErr != nil {
-		log.Println("从最快源下载安装文件失败")
+		log.Println("从首个源下载安装文件失败")
 		log.Println("Error:", setupErr)
 
-		// Try other sources if the fastest one failed
+		// Try other sources if the first one failed
 		setupSuccess := false
 		for _, baseURL := range updateResp.URL {
-			if baseURL == fastestSource {
+			if baseURL == firstSource {
 				continue // Skip the one we already tried
 			}
 
@@ -176,13 +96,13 @@ func downloadAndExecuteFiles(updateResp *UpdateResponse, fastestSource string) e
 
 	// Handle convert file download error
 	if convertErr != nil {
-		log.Println("从最快源下载转换文件失败")
+		log.Println("从首个源下载转换文件失败")
 		log.Println("Error:", convertErr)
 
-		// Try other sources if the fastest one failed
+		// Try other sources if the first one failed
 		convertSuccess := false
 		for _, baseURL := range updateResp.URL {
-			if baseURL == fastestSource {
+			if baseURL == firstSource {
 				continue // Skip the one we already tried
 			}
 
@@ -296,7 +216,7 @@ func isUserCancellation(err error) bool {
 	return false
 }
 
-func getUpdateInfo() (*UpdateResponse, error) {
+func GetUpdateInfo() (*UpdateResponse, error) {
 	// 先尝试主URL，然后回退到备用URL
 	primaryURL := "https://gitee.com/hqu_little_boy/danmu-version/raw/master/BilibiliDanmuRobot2BiliBiliLiveRobot.json"
 	secondaryURL := "https://bilibililiverobot.21645851.xyz/BilibiliDanmuRobot2BiliBiliLiveRobot.json"
