@@ -1,8 +1,6 @@
 package main
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -50,6 +47,12 @@ func downloadFile(url, filename string) error {
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
+	if err != nil {
+		log.Printf("文件 %s 下载失败: %v", filename, err)
+		return err
+	}
+
+	log.Printf("文件 %s 下载成功", filename)
 	return err
 }
 
@@ -127,10 +130,6 @@ func testDownloadSpeed(url string) DownloadSpeedResult {
 				n, err := resp.Body.Read(buffer)
 				if n > 0 {
 					bytesDownloaded += int64(n)
-					// Optional: log progress periodically
-					if bytesDownloaded%(1024*1024) == 0 { // Log every 1MB
-						log.Printf("Downloaded %d bytes from %s", bytesDownloaded, testURL)
-					}
 				}
 				if err != nil {
 					if err == io.EOF {
@@ -248,8 +247,6 @@ func main() {
 				completedSources++
 				if result.Error != nil {
 					log.Printf("源 %s 测试结果: 失败 - %v", result.URL, result.Error)
-				} else {
-					log.Printf("源 %s 测试结果: %.2f bytes/sec", result.URL, result.Speed)
 				}
 			case <-timeout:
 				log.Println("达到总体超时，停止测试")
@@ -262,8 +259,6 @@ func main() {
 						completedSources++
 						if result.Error != nil {
 							log.Printf("源 %s 测试结果: 失败 - %v", result.URL, result.Error)
-						} else {
-							log.Printf("源 %s 测试结果: %.2f bytes/sec", result.URL, result.Speed)
 						}
 					case <-remainingTimeout:
 						log.Printf("最终结果收集完成，已收集 %d 个结果", len(speedResults))
@@ -321,7 +316,7 @@ func main() {
 
 		// Download convert file in a goroutine
 		go func() {
-			err := downloadAndExtract(convertLink)
+			err := downloadFile(convertLink, filepath.Base(updateResp.Convert))
 			convertResultChan <- err
 		}()
 
@@ -371,7 +366,7 @@ func main() {
 				convertLink = baseURL + updateResp.Convert
 				log.Printf("尝试备用源下载转换文件: %s", convertLink)
 
-				convertErr = downloadAndExtract(convertLink)
+				convertErr = downloadFile(convertLink, filepath.Base(updateResp.Convert))
 				if convertErr == nil {
 					log.Println("备用源下载转换文件成功")
 					break
@@ -387,12 +382,6 @@ func main() {
 
 		log.Println("安装文件和转换文件并行下载完成")
 
-		log.Println("弹幕机更新完成即将启动")
-		cmd := exec.Command("cmd.exe", "/C", "start", "GUI-BilibiliDanmuRobot.exe")
-		if err := cmd.Start(); err != nil {
-			log.Println("启动弹幕机失败，请手动启动")
-			log.Println(err)
-		}
 		log.Println("更新完成即将退出更新程序")
 	} else {
 		log.Println("更新服务器链接失败")
@@ -402,46 +391,4 @@ func main() {
 	time.Sleep(10 * time.Second)
 	log.Println("upgrade exit")
 	os.Exit(0)
-}
-
-func downloadAndExtract(link string) error {
-	resp, err := http.Get(link)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Println("弹幕机下载失败")
-		return err
-	}
-	log.Println("弹幕机下载成功，正在解压")
-	zipReader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
-	if err != nil {
-		return err
-	}
-	log.Println("解压成功，正在更新软件")
-	for _, file := range zipReader.File {
-		if filepath.Base(file.Name) == "GUI-BilibiliDanmuRobot.exe" {
-			zippedFile, err := file.Open()
-			if err != nil {
-				return err
-			}
-			defer zippedFile.Close()
-
-			extractedFile, err := os.OpenFile(filepath.Base(file.Name), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.Mode())
-			if err != nil {
-				return err
-			}
-			defer extractedFile.Close()
-
-			_, err = io.Copy(extractedFile, zippedFile)
-			if err != nil {
-				return err
-			}
-			break // 只提取第一个匹配的文件
-		}
-	}
-
-	return nil
 }
