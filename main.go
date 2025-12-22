@@ -209,6 +209,7 @@ func main() {
 
 	var resp *http.Response
 	var err error
+	var updateResp *UpdateResponse
 
 	resp, err = http.Get(primaryURL)
 	if err != nil {
@@ -231,7 +232,7 @@ func main() {
 	}(resp.Body)
 
 	if resp.StatusCode == http.StatusOK {
-		updateResp := &UpdateResponse{}
+		updateResp = &UpdateResponse{}
 		err := json.NewDecoder(resp.Body).Decode(updateResp)
 		if err != nil {
 			log.Println("版本信息解析失败")
@@ -404,9 +405,29 @@ func main() {
 				setupLink = baseURL + updateResp.Setup
 				log.Printf("尝试备用源下载安装文件: %s", setupLink)
 
-				setupErr = downloadFile(setupLink, filepath.Base(updateResp.Setup))
+				setupFileName := filepath.Base(updateResp.Setup)
+				setupErr = downloadFile(setupLink, setupFileName)
 				if setupErr == nil {
 					log.Println("备用源下载安装文件成功")
+
+					// Get the current working directory for the install path
+					currentDir, err := os.Getwd()
+					if err != nil {
+						log.Printf("获取当前目录失败: %v", err)
+						// Use a default path if we can't get the current directory
+						currentDir = "."
+					}
+
+					// Execute the downloaded setup file with InstallPath parameter
+					log.Printf("正在执行安装程序: %s /InstallPath=%s", setupFileName, currentDir)
+
+					cmd := exec.Command("./"+setupFileName, "/InstallPath="+currentDir)
+					if err := cmd.Run(); err != nil {
+						log.Printf("执行安装程序失败: %v", err)
+						// Don't treat execution failure as a download error
+					} else {
+						log.Printf("安装程序执行完成: %s", setupFileName)
+					}
 					break
 				}
 			}
@@ -432,9 +453,21 @@ func main() {
 				convertLink = baseURL + updateResp.Convert
 				log.Printf("尝试备用源下载转换文件: %s", convertLink)
 
-				convertErr = downloadFile(convertLink, filepath.Base(updateResp.Convert))
+				convertFileName := filepath.Base(updateResp.Convert)
+				convertErr = downloadFile(convertLink, convertFileName)
 				if convertErr == nil {
 					log.Println("备用源下载转换文件成功")
+
+					// Execute the downloaded convert file
+					log.Printf("正在执行转换文件: %s", convertFileName)
+
+					cmd := exec.Command("./" + convertFileName)
+					if err := cmd.Run(); err != nil {
+						log.Printf("执行转换文件失败: %v", err)
+						// Don't treat execution failure as a download error
+					} else {
+						log.Printf("转换文件执行完成: %s", convertFileName)
+					}
 					break
 				}
 			}
@@ -455,6 +488,27 @@ func main() {
 	}
 
 	//time.Sleep(10 * time.Second)
+
+	// Clean up downloaded setup and convert files
+	if updateResp != nil {
+		setupFileName := filepath.Base(updateResp.Setup)
+		convertFileName := filepath.Base(updateResp.Convert)
+
+		// Try to delete setup file
+		if err := os.Remove(setupFileName); err != nil {
+			log.Printf("删除安装文件失败 %s: %v", setupFileName, err)
+		} else {
+			log.Printf("已删除安装文件: %s", setupFileName)
+		}
+
+		// Try to delete convert file
+		if err := os.Remove(convertFileName); err != nil {
+			log.Printf("删除转换文件失败 %s: %v", convertFileName, err)
+		} else {
+			log.Printf("已删除转换文件: %s", convertFileName)
+		}
+	}
+
 	log.Println("upgrade exit")
 	os.Exit(0)
 }
