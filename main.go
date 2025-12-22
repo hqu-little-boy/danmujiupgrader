@@ -454,7 +454,7 @@ func main() {
 		log.Printf("Request failed with status code: %d\n", resp.StatusCode)
 	}
 
-	time.Sleep(10 * time.Second)
+	//time.Sleep(10 * time.Second)
 	log.Println("upgrade exit")
 	os.Exit(0)
 }
