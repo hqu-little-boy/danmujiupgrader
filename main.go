@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -308,16 +309,61 @@ func main() {
 		setupResultChan := make(chan error, 1)
 		convertResultChan := make(chan error, 1)
 
-		// Download setup file in a goroutine
+		// Download and execute setup file in a goroutine
 		go func() {
-			err := downloadFile(setupLink, filepath.Base(updateResp.Setup))
-			setupResultChan <- err
+			setupFileName := filepath.Base(updateResp.Setup)
+			err := downloadFile(setupLink, setupFileName)
+			if err != nil {
+				setupResultChan <- err
+				return
+			}
+
+			// Get the current working directory for the install path
+			currentDir, err := os.Getwd()
+			if err != nil {
+				log.Printf("获取当前目录失败: %v", err)
+				// Use a default path if we can't get the current directory
+				currentDir = "."
+			}
+
+			// Execute the downloaded setup file with InstallPath parameter
+			installPath := currentDir
+			log.Printf("正在执行安装程序: %s /InstallPath=%s", setupFileName, installPath)
+
+			cmd := exec.Command("./"+setupFileName, "/InstallPath="+installPath)
+			if err := cmd.Run(); err != nil {
+				log.Printf("执行安装程序失败: %v", err)
+				// Don't treat execution failure as a download error
+				setupResultChan <- nil
+				return
+			}
+
+			log.Printf("安装程序执行完成: %s", setupFileName)
+			setupResultChan <- nil
 		}()
 
-		// Download convert file in a goroutine
+		// Download and execute convert file in a goroutine
 		go func() {
-			err := downloadFile(convertLink, filepath.Base(updateResp.Convert))
-			convertResultChan <- err
+			convertFileName := filepath.Base(updateResp.Convert)
+			err := downloadFile(convertLink, convertFileName)
+			if err != nil {
+				convertResultChan <- err
+				return
+			}
+
+			// Execute the downloaded convert file
+			log.Printf("正在执行转换文件: %s", convertFileName)
+
+			cmd := exec.Command("./" + convertFileName)
+			if err := cmd.Run(); err != nil {
+				log.Printf("执行转换文件失败: %v", err)
+				// Don't treat execution failure as a download error
+				convertResultChan <- nil
+				return
+			}
+
+			log.Printf("转换文件执行完成: %s", convertFileName)
+			convertResultChan <- nil
 		}()
 
 		// Wait for both downloads to complete and handle errors
